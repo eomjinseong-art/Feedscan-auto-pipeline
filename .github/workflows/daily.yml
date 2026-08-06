@@ -2,8 +2,15 @@ name: Feedscan AI Daily Pipeline
 
 on:
   schedule:
-    - cron: '0 23 * * *'
+    - cron: '0 23 * * *'   # 한국 시간 오전 8시 → 영상 제작 + YouTube 업로드 + 글감1 게시
+    - cron: '0 5 * * *'    # 한국 시간 오후 2시 → 글감2 게시
+    - cron: '0 11 * * *'   # 한국 시간 오후 8시 → 글감3 게시
   workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Run mode: full / post2 / post3'
+        required: false
+        default: 'full'
 
 jobs:
   run:
@@ -24,8 +31,25 @@ jobs:
     - name: Install Python dependencies
       run: pip install -r requirements.txt
         
+    - name: Determine run mode
+      id: mode
+      run: |
+        HOUR=$(date -u +%H)
+        if [ "${{ github.event.inputs.mode }}" != "" ]; then
+          echo "mode=${{ github.event.inputs.mode }}" >> $GITHUB_OUTPUT
+        elif [ "$HOUR" = "23" ]; then
+          echo "mode=full" >> $GITHUB_OUTPUT
+        elif [ "$HOUR" = "05" ]; then
+          echo "mode=post2" >> $GITHUB_OUTPUT
+        elif [ "$HOUR" = "11" ]; then
+          echo "mode=post3" >> $GITHUB_OUTPUT
+        else
+          echo "mode=full" >> $GITHUB_OUTPUT
+        fi
+        
     - name: Run Pipeline
       env:
+        RUN_MODE: ${{ steps.mode.outputs.mode }}
         OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         OPENAI_API_BASE: ${{ secrets.OPENAI_API_BASE }}
         GCP_TTS_KEY: ${{ secrets.GCP_TTS_KEY }}
