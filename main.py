@@ -46,10 +46,17 @@ def fetch_daily_data():
         return []
     
     data = resp.json()
-    # 한국어 콘텐츠 중 탑10
-    kr_videos = [v for v in data if v.get("language") == "ko" or "title_ko" in v][:10]
-    if not kr_videos:
-        kr_videos = data[:10]
+    # JSON 구조: {"date": ..., "kr_shorts_top10": [...], "videos_top10": [...]}
+    if isinstance(data, dict):
+        kr_videos = data.get("kr_shorts_top10", [])
+        if not kr_videos:
+            kr_videos = data.get("videos_top10", [])
+        if not kr_videos:
+            kr_videos = data.get("shorts_top10", [])
+    else:
+        kr_videos = [v for v in data if isinstance(v, dict)][:10]
+    
+    kr_videos = kr_videos[:10]
     print(f"  {len(kr_videos)}개 콘텐츠 확인")
     return kr_videos
 
