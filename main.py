@@ -1,6 +1,11 @@
 """
 Feedscan AI 일일 자동화 파이프라인 (GitHub Actions용)
 전체 흐름: 데이터 수집 → GPT 선정/생성 → TTS → 이미지 합성 → 자막 → FFmpeg → YouTube 업로드 → Threads/X 시간차 게시
+
+RUN_MODE:
+- full: 영상 제작 + YouTube 업로드 + 글감1 게시 (오전 8시)
+- post2: 글감2 게시 (오후 2시)
+- post3: 글감3 게시 (오후 8시)
 """
 import os, json, time, base64, subprocess, math, sys
 from datetime import datetime
@@ -10,6 +15,7 @@ from openai import OpenAI
 from PIL import Image, ImageDraw, ImageFont
 
 # === 환경 변수 ===
+RUN_MODE = os.environ.get("RUN_MODE", "full")
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 OPENAI_API_BASE = os.environ.get("OPENAI_API_BASE")
 GCP_TTS_KEY = os.environ.get("GCP_TTS_KEY")
@@ -24,6 +30,7 @@ YT_CLIENT_SECRET = os.environ.get("YT_CLIENT_SECRET")
 YT_REFRESH_TOKEN = os.environ.get("YT_REFRESH_TOKEN")
 
 WORK_DIR = "/tmp/feedscan_render"
+DATA_FILE = "/tmp/feedscan_today.json"
 os.makedirs(WORK_DIR, exist_ok=True)
 
 client = OpenAI(api_key=OPENAI_API_KEY, base_url=OPENAI_API_BASE)
@@ -263,7 +270,6 @@ def render_video(images, audio_path, ass_path, duration):
 def upload_youtube(video_path, title, description):
     print("[7/7] YouTube 업로드 중...")
     
-    # Refresh Token으로 Access Token 발급
     token_resp = requests.post("https://oauth2.googleapis.com/token", data={
         "client_id": YT_CLIENT_ID,
         "client_secret": YT_CLIENT_SECRET,
@@ -277,7 +283,6 @@ def upload_youtube(video_path, title, description):
     access_token = token_resp.json()["access_token"]
     filesize = os.path.getsize(video_path)
     
-    # Resumable upload
     init_resp = requests.post(
         "https://www.googleapis.com/upload/youtube/v3/videos?uploadType=resumable&part=snippet,status",
         headers={
@@ -313,79 +318,105 @@ def upload_youtube(video_path, title, description):
         print(f"  업로드 실패: {upload_resp.text[:200]}")
         return None
 
-# === 소셜 게시 ===
-def post_social(texts):
-    print("Threads/X 게시 중...")
+# === 소셜 게시 (1개만) ===
+def post_single(text):
+    """글감 1개를 Threads + X에 게시"""
     auth = OAuth1(X_CONSUMER_KEY, X_CONSUMER_SECRET, X_ACCESS_TOKEN, X_ACCESS_SECRET)
     
-    for i, text in enumerate(texts):
-        # Threads
-        if THREADS_TOKEN:
-            resp = requests.post(
-                f"https://graph.threads.net/v1.0/{THREADS_USER_ID}/threads",
-                params={"media_type": "TEXT", "text": text, "access_token": THREADS_TOKEN}
+    # Threads
+    if THREADS_TOKEN:
+        resp = requests.post(
+            f"https://graph.threads.net/v1.0/{THREADS_USER_ID}/threads",
+            params={"media_type": "TEXT", "text": text, "access_token": THREADS_TOKEN}
+        )
+        if resp.status_code == 200:
+            cid = resp.json().get("id")
+            time.sleep(3)
+            requests.post(
+                f"https://graph.threads.net/v1.0/{THREADS_USER_ID}/threads_publish",
+                params={"creation_id": cid, "access_token": THREADS_TOKEN}
             )
-            if resp.status_code == 200:
-                cid = resp.json().get("id")
-                time.sleep(3)
-                requests.post(
-                    f"https://graph.threads.net/v1.0/{THREADS_USER_ID}/threads_publish",
-                    params={"creation_id": cid, "access_token": THREADS_TOKEN}
-                )
-                print(f"  [Threads] 글감{i+1} 게시 완료")
-        
-        # X
-        if X_CONSUMER_KEY:
-            resp = requests.post(
-                "https://api.twitter.com/2/tweets",
-                auth=auth, json={"text": text}, headers={"Content-Type": "application/json"}
-            )
-            if resp.status_code == 201:
-                print(f"  [X] 글감{i+1} 게시 완료")
-        
-        if i < len(texts) - 1:
-            print(f"  → 60초 대기...")
-            time.sleep(60)
+            print(f"  [Threads] 게시 완료")
+    
+    # X
+    if X_CONSUMER_KEY:
+        resp = requests.post(
+            "https://api.twitter.com/2/tweets",
+            auth=auth, json={"text": text}, headers={"Content-Type": "application/json"}
+        )
+        if resp.status_code == 201:
+            print(f"  [X] 게시 완료")
 
 # === 메인 ===
 if __name__ == "__main__":
     print("=" * 50)
-    print("Feedscan AI 일일 자동화 파이프라인")
+    print(f"Feedscan AI 파이프라인 | 모드: {RUN_MODE}")
     print(f"실행 시간: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
     print("=" * 50)
     
-    # 1. 데이터 수집
-    videos = fetch_daily_data()
-    if not videos:
-        print("데이터 없음. 종료.")
-        sys.exit(1)
-    
-    # 2. GPT 콘텐츠 생성
-    content = generate_content(videos)
-    
-    # 3. TTS
-    tts_result = generate_tts(content["narration"])
-    if not tts_result:
-        sys.exit(1)
-    audio_path, duration = tts_result
-    
-    # 4. 이미지
-    images = generate_images(content["scene_titles"])
-    
-    # 5. 자막
-    ass_path = generate_subtitles(content["narration"], duration)
-    
-    # 6. 영상 합성
-    video_path = render_video(images, audio_path, ass_path, duration)
-    if not video_path:
-        sys.exit(1)
-    
-    # 7. YouTube 업로드
-    upload_youtube(video_path, content["yt_title"], content["yt_desc"])
-    
-    # 8. Threads/X 게시 (시간차)
-    post_social([content["tx1"], content["tx2"], content["tx3"]])
+    if RUN_MODE == "full":
+        # === 오전 8시: 전체 실행 (영상 + 글감1) ===
+        
+        # 1. 데이터 수집
+        videos = fetch_daily_data()
+        if not videos:
+            print("데이터 없음. 종료.")
+            sys.exit(1)
+        
+        # 2. GPT 콘텐츠 생성
+        content = generate_content(videos)
+        
+        # 오후 2시, 8시에 사용할 글감을 저장
+        with open(DATA_FILE, "w", encoding="utf-8") as f:
+            json.dump({"tx1": content["tx1"], "tx2": content["tx2"], "tx3": content["tx3"]}, f, ensure_ascii=False)
+        
+        # GitHub Actions 아티팩트로 저장 (다음 실행에서 사용)
+        # 대안: 글감을 Google Sheets에 기록하고 나중에 읽어오기
+        
+        # 3. TTS
+        tts_result = generate_tts(content["narration"])
+        if not tts_result:
+            sys.exit(1)
+        audio_path, duration = tts_result
+        
+        # 4. 이미지
+        images = generate_images(content["scene_titles"])
+        
+        # 5. 자막
+        ass_path = generate_subtitles(content["narration"], duration)
+        
+        # 6. 영상 합성
+        video_path = render_video(images, audio_path, ass_path, duration)
+        if not video_path:
+            sys.exit(1)
+        
+        # 7. YouTube 업로드
+        upload_youtube(video_path, content["yt_title"], content["yt_desc"])
+        
+        # 8. 글감1 게시
+        print("\n글감1 게시 중...")
+        post_single(content["tx1"])
+        
+    elif RUN_MODE == "post2":
+        # === 오후 2시: 글감2만 게시 ===
+        # 오전에 생성한 글감을 가져와야 함
+        # GitHub Actions는 실행마다 환경이 초기화되므로, 다시 생성
+        print("글감2 생성 및 게시 중...")
+        videos = fetch_daily_data()
+        if not videos:
+            sys.exit(1)
+        content = generate_content(videos)
+        post_single(content["tx2"])
+        
+    elif RUN_MODE == "post3":
+        # === 오후 8시: 글감3만 게시 ===
+        print("글감3 생성 및 게시 중...")
+        videos = fetch_daily_data()
+        if not videos:
+            sys.exit(1)
+        content = generate_content(videos)
+        post_single(content["tx3"])
     
     print("\n" + "=" * 50)
-    print("파이프라인 완료!")
+    print("완료!")
     print("=" * 50)
