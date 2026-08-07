@@ -7,7 +7,7 @@ RUN_MODE:
 - post2: 글감2 게시 (오후 2시)
 - post3: 글감3 게시 (오후 8시)
 """
-import os, json, time, base64, subprocess, math, sys
+import os, json, time, base64, subprocess, math, sys, random, textwrap
 from datetime import datetime
 import requests
 from requests_oauthlib import OAuth1
@@ -53,9 +53,10 @@ def fetch_daily_data():
         return []
     
     data = resp.json()
-    # JSON 구조: {"date": ..., "kr_shorts_top10": [...], "videos_top10": [...]}
     if isinstance(data, dict):
         kr_videos = data.get("kr_shorts_top10", [])
+        if not kr_videos:
+            kr_videos = data.get("kr_videos_top10", [])
         if not kr_videos:
             kr_videos = data.get("videos_top10", [])
         if not kr_videos:
@@ -97,6 +98,8 @@ def generate_content(videos):
    - 해시태그 절대 사용 금지
 3. YouTube Shorts 제목 (40자 이내, #Shorts 포함)
 4. YouTube 설명문 (2~3줄 + 해시태그 5개)
+5. 뱃지 텍스트: 영상 상단에 표시할 짧은 뱃지 (예: "#1 TODAY", "WARNING", "REALITY CHECK", "핵심 요약 3단계")
+6. 핵심 요약 3단계: 이 콘텐츠의 핵심을 3단계로 요약 (각 단계는 제목 + 한줄 설명)
 
 반드시 아래 JSON 형식으로만 응답:
 {{
@@ -108,7 +111,14 @@ def generate_content(videos):
   "tx3": "글감3",
   "yt_title": "유튜브 제목 #Shorts",
   "yt_desc": "유튜브 설명문",
-  "scene_titles": [["씬1 줄1", "씬1 줄2"], ["씬2 줄1", "씬2 줄2"], ["씬3 줄1", "씬3 줄2", "씬3 줄3"], ["씬4 줄1", "씬4 줄2"], ["씬5 줄1", "씬5 줄2"]]
+  "badge": "#1 TODAY",
+  "summary_steps": [
+    {{"step": 1, "title": "단계1 제목", "desc": "단계1 설명"}},
+    {{"step": 2, "title": "단계2 제목", "desc": "단계2 설명"}},
+    {{"step": 3, "title": "단계3 제목", "desc": "단계3 설명"}}
+  ],
+  "main_title": "메인 제목 (2줄, 각 줄 10자 이내)",
+  "sub_info": "조회수 000,000"
 }}"""
     
     response = client.chat.completions.create(
@@ -124,73 +134,203 @@ def generate_content(videos):
     idx = result.get("selected_index", 1) - 1
     if idx < len(videos):
         result["source_url"] = f"https://youtube.com/watch?v={videos[idx].get('video_id', '')}"
+        result["views"] = videos[idx].get("views", 0)
     print(f"  선정: {result['topic']}")
     return result
 
-# === 3. TTS 생성 ===
+# === 3. TTS 생성 (Chirp 3: HD - Puck) ===
 def generate_tts(text):
-    print("[3/7] TTS 생성 중 (Google Cloud Neural2-C)...")
+    print("[3/7] TTS 생성 중 (Chirp3-HD-Puck)...")
     resp = requests.post(
-        f"https://texttospeech.googleapis.com/v1/text:synthesize?key={GCP_TTS_KEY}",
+        f"https://texttospeech.googleapis.com/v1beta1/text:synthesize?key={GCP_TTS_KEY}",
         json={
             "input": {"text": text},
-            "voice": {"languageCode": "ko-KR", "name": "ko-KR-Neural2-C"},
-            "audioConfig": {"audioEncoding": "MP3", "speakingRate": 1.25, "pitch": 2.0}
+            "voice": {"languageCode": "ko-KR", "name": "ko-KR-Chirp3-HD-Puck"},
+            "audioConfig": {"audioEncoding": "MP3", "speakingRate": 1.1}
         }
     )
     if resp.status_code != 200:
-        print(f"  TTS 실패: {resp.text[:200]}")
-        return None
+        print(f"  Chirp3-HD 실패, Neural2-C 폴백 시도...")
+        resp = requests.post(
+            f"https://texttospeech.googleapis.com/v1/text:synthesize?key={GCP_TTS_KEY}",
+            json={
+                "input": {"text": text},
+                "voice": {"languageCode": "ko-KR", "name": "ko-KR-Neural2-C"},
+                "audioConfig": {"audioEncoding": "MP3", "speakingRate": 1.25, "pitch": 2.0}
+            }
+        )
+        if resp.status_code != 200:
+            print(f"  TTS 실패: {resp.text[:200]}")
+            return None
     
     audio_path = f"{WORK_DIR}/narration.mp3"
     with open(audio_path, "wb") as f:
         f.write(base64.b64decode(resp.json()["audioContent"]))
     
+    # 앞뒤 1초 무음 추가
+    padded_path = f"{WORK_DIR}/narration_padded.mp3"
+    subprocess.run([
+        "ffmpeg", "-y",
+        "-f", "lavfi", "-t", "1", "-i", "anullsrc=r=24000:cl=mono",
+        "-i", audio_path,
+        "-f", "lavfi", "-t", "1", "-i", "anullsrc=r=24000:cl=mono",
+        "-filter_complex", "[0][1][2]concat=n=3:v=0:a=1[out]",
+        "-map", "[out]", padded_path
+    ], capture_output=True)
+    
+    final_audio = padded_path if os.path.exists(padded_path) else audio_path
+    
     dur = float(subprocess.check_output([
         "ffprobe", "-v", "error", "-show_entries", "format=duration",
-        "-of", "default=noprint_wrappers=1:nokey=1", audio_path
+        "-of", "default=noprint_wrappers=1:nokey=1", final_audio
     ]).decode().strip())
     print(f"  생성 완료: {dur:.1f}초")
-    return audio_path, dur
+    return final_audio, dur
 
-# === 4. 이미지 생성 ===
-def generate_images(scene_titles):
-    print("[4/7] 이미지 생성 중...")
-    bg_files = ["bg1.png", "bg2.png", "bg3.png", "bg4.png", "bg5.png"]
-    font_path = "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc"
+# === 4. 포디움 디자인 이미지 생성 ===
+def generate_images(content):
+    print("[4/7] 포디움 디자인 이미지 생성 중...")
+    bg_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "backgrounds")
     
+    # 폰트 설정
+    font_path = "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc"
     try:
-        font_main = ImageFont.truetype(font_path, 100)
-        font_sub = ImageFont.truetype(font_path, 65)
+        font_badge = ImageFont.truetype(font_path, 42)
+        font_title = ImageFont.truetype(font_path, 72)
+        font_sub = ImageFont.truetype(font_path, 48)
+        font_step_num = ImageFont.truetype(font_path, 56)
+        font_step_title = ImageFont.truetype(font_path, 44)
+        font_step_desc = ImageFont.truetype(font_path, 36)
+        font_info = ImageFont.truetype(font_path, 32)
     except:
         font_path = "/usr/share/fonts/truetype/noto/NotoSansCJK-Bold.ttc"
         try:
-            font_main = ImageFont.truetype(font_path, 100)
-            font_sub = ImageFont.truetype(font_path, 65)
+            font_badge = ImageFont.truetype(font_path, 42)
+            font_title = ImageFont.truetype(font_path, 72)
+            font_sub = ImageFont.truetype(font_path, 48)
+            font_step_num = ImageFont.truetype(font_path, 56)
+            font_step_title = ImageFont.truetype(font_path, 44)
+            font_step_desc = ImageFont.truetype(font_path, 36)
+            font_info = ImageFont.truetype(font_path, 32)
         except:
-            print("  폰트를 찾을 수 없습니다. 기본 폰트 사용.")
-            font_main = ImageFont.load_default()
-            font_sub = font_main
+            print("  폰트를 찾을 수 없습니다.")
+            font_badge = font_title = font_sub = font_step_num = font_step_title = font_step_desc = font_info = ImageFont.load_default()
+    
+    badge = content.get("badge", "#1 TODAY")
+    main_title = content.get("main_title", content.get("topic", "AI 부업"))
+    views = content.get("views", 0)
+    sub_info = content.get("sub_info", f"조회수 {views:,}")
+    summary_steps = content.get("summary_steps", [])
     
     images = []
-    bg_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "backgrounds")
     
-    for i, titles in enumerate(scene_titles):
-        bg_path = os.path.join(bg_dir, bg_files[i % 5])
-        img = Image.open(bg_path).convert("RGBA").resize((1080, 1920))
-        draw = ImageDraw.Draw(img)
-        
-        y = 300
-        for j, line in enumerate(titles):
-            font = font_main if j == 0 else font_sub
-            draw.text((100, y), line, font=font, fill=(255, 255, 255))
-            y += 140 if j == 0 else 100
-        
-        out_path = f"{WORK_DIR}/scene_{i}.png"
-        img.save(out_path)
-        images.append(out_path)
+    # === 씬 1: 포디움 + 뱃지 + 메인 제목 (bg2.png 사용) ===
+    bg_path = os.path.join(bg_dir, "bg2.png")
+    if not os.path.exists(bg_path):
+        bg_path = os.path.join(bg_dir, "bg1.png")
+    img = Image.open(bg_path).convert("RGBA").resize((1080, 1920))
+    draw = ImageDraw.Draw(img)
     
-    print(f"  {len(images)}장 생성 완료")
+    # 뱃지 (상단 중앙, 빨간/금색 배경)
+    badge_bbox = draw.textbbox((0, 0), badge, font=font_badge)
+    badge_w = badge_bbox[2] - badge_bbox[0]
+    badge_h = badge_bbox[3] - badge_bbox[1]
+    badge_x = (1080 - badge_w - 40) // 2
+    badge_y = 120
+    draw.rounded_rectangle(
+        [badge_x, badge_y, badge_x + badge_w + 40, badge_y + badge_h + 20],
+        radius=12, fill=(220, 50, 50)
+    )
+    draw.text((badge_x + 20, badge_y + 8), badge, font=font_badge, fill=(255, 255, 255))
+    
+    # 메인 제목 (중앙)
+    title_lines = main_title.split("\n") if "\n" in main_title else [main_title]
+    y = 350
+    for line in title_lines[:3]:
+        line_bbox = draw.textbbox((0, 0), line, font=font_title)
+        line_w = line_bbox[2] - line_bbox[0]
+        draw.text(((1080 - line_w) // 2, y), line, font=font_title, fill=(255, 215, 0))
+        y += 100
+    
+    # 조회수 정보
+    info_bbox = draw.textbbox((0, 0), sub_info, font=font_info)
+    info_w = info_bbox[2] - info_bbox[0]
+    draw.text(((1080 - info_w) // 2, y + 30), sub_info, font=font_info, fill=(200, 200, 200))
+    
+    out_path = f"{WORK_DIR}/scene_0.png"
+    img.save(out_path)
+    images.append(out_path)
+    
+    # === 씬 2: 핵심 요약 3단계 (bg3.png 사용 - 블루 사이버) ===
+    bg_path = os.path.join(bg_dir, "bg3.png")
+    if not os.path.exists(bg_path):
+        bg_path = os.path.join(bg_dir, "bg1.png")
+    img = Image.open(bg_path).convert("RGBA").resize((1080, 1920))
+    draw = ImageDraw.Draw(img)
+    
+    # 상단 제목
+    header = "핵심 요약 3단계"
+    header_bbox = draw.textbbox((0, 0), header, font=font_sub)
+    header_w = header_bbox[2] - header_bbox[0]
+    draw.text(((1080 - header_w) // 2, 180), header, font=font_sub, fill=(255, 215, 0))
+    
+    # 3단계 카드
+    y = 380
+    for i, step in enumerate(summary_steps[:3]):
+        # 번호 원
+        circle_x = 120
+        circle_y = y + 10
+        draw.ellipse([circle_x - 30, circle_y - 30, circle_x + 30, circle_y + 30], fill=(255, 215, 0))
+        num_text = str(step.get("step", i + 1))
+        num_bbox = draw.textbbox((0, 0), num_text, font=font_step_num)
+        num_w = num_bbox[2] - num_bbox[0]
+        draw.text((circle_x - num_w // 2, circle_y - 28), num_text, font=font_step_num, fill=(0, 0, 0))
+        
+        # 제목
+        step_title = step.get("title", "")
+        draw.text((180, y - 15), step_title, font=font_step_title, fill=(255, 255, 255))
+        
+        # 설명
+        step_desc = step.get("desc", "")
+        draw.text((180, y + 45), step_desc, font=font_step_desc, fill=(180, 180, 180))
+        
+        y += 180
+    
+    out_path = f"{WORK_DIR}/scene_1.png"
+    img.save(out_path)
+    images.append(out_path)
+    
+    # === 씬 3: 결론/CTA (bg5.png 사용 - 퍼플 네온) ===
+    bg_path = os.path.join(bg_dir, "bg5.png")
+    if not os.path.exists(bg_path):
+        bg_path = os.path.join(bg_dir, "bg2.png")
+    img = Image.open(bg_path).convert("RGBA").resize((1080, 1920))
+    draw = ImageDraw.Draw(img)
+    
+    # CTA 텍스트
+    cta_lines = [
+        "더 자세한 분석은",
+        "프로필 링크에서",
+        "확인하세요"
+    ]
+    y = 300
+    for line in cta_lines:
+        line_bbox = draw.textbbox((0, 0), line, font=font_title)
+        line_w = line_bbox[2] - line_bbox[0]
+        draw.text(((1080 - line_w) // 2, y), line, font=font_title, fill=(255, 255, 255))
+        y += 110
+    
+    # 하단 채널명
+    channel = "FeedScan AI"
+    ch_bbox = draw.textbbox((0, 0), channel, font=font_sub)
+    ch_w = ch_bbox[2] - ch_bbox[0]
+    draw.text(((1080 - ch_w) // 2, y + 80), channel, font=font_sub, fill=(255, 215, 0))
+    
+    out_path = f"{WORK_DIR}/scene_2.png"
+    img.save(out_path)
+    images.append(out_path)
+    
+    print(f"  {len(images)}장 생성 완료 (포디움 디자인)")
     return images
 
 # === 5. 자막 생성 ===
@@ -212,9 +352,11 @@ Style: Default,Noto Sans CJK KR,56,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,-
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 """
     
-    current = 0
+    current = 1.0  # 앞 1초 무음 이후 시작
+    effective_duration = duration - 2.0  # 앞뒤 1초씩 제외
+    
     for sentence in sentences:
-        dur = (len(sentence) / total_chars) * duration
+        dur = (len(sentence) / total_chars) * effective_duration
         start = f"{int(current//3600)}:{int((current%3600)//60):02d}:{current%60:05.2f}"
         end_t = current + dur
         end = f"{int(end_t//3600)}:{int((end_t%3600)//60):02d}:{end_t%60:05.2f}"
@@ -355,8 +497,6 @@ if __name__ == "__main__":
     print("=" * 50)
     
     if RUN_MODE == "full":
-        # === 오전 8시: 전체 실행 (영상 + 글감1) ===
-        
         # 1. 데이터 수집
         videos = fetch_daily_data()
         if not videos:
@@ -366,21 +506,14 @@ if __name__ == "__main__":
         # 2. GPT 콘텐츠 생성
         content = generate_content(videos)
         
-        # 오후 2시, 8시에 사용할 글감을 저장
-        with open(DATA_FILE, "w", encoding="utf-8") as f:
-            json.dump({"tx1": content["tx1"], "tx2": content["tx2"], "tx3": content["tx3"]}, f, ensure_ascii=False)
-        
-        # GitHub Actions 아티팩트로 저장 (다음 실행에서 사용)
-        # 대안: 글감을 Google Sheets에 기록하고 나중에 읽어오기
-        
         # 3. TTS
         tts_result = generate_tts(content["narration"])
         if not tts_result:
             sys.exit(1)
         audio_path, duration = tts_result
         
-        # 4. 이미지
-        images = generate_images(content["scene_titles"])
+        # 4. 포디움 디자인 이미지
+        images = generate_images(content)
         
         # 5. 자막
         ass_path = generate_subtitles(content["narration"], duration)
@@ -398,9 +531,6 @@ if __name__ == "__main__":
         post_single(content["tx1"])
         
     elif RUN_MODE == "post2":
-        # === 오후 2시: 글감2만 게시 ===
-        # 오전에 생성한 글감을 가져와야 함
-        # GitHub Actions는 실행마다 환경이 초기화되므로, 다시 생성
         print("글감2 생성 및 게시 중...")
         videos = fetch_daily_data()
         if not videos:
@@ -409,7 +539,6 @@ if __name__ == "__main__":
         post_single(content["tx2"])
         
     elif RUN_MODE == "post3":
-        # === 오후 8시: 글감3만 게시 ===
         print("글감3 생성 및 게시 중...")
         videos = fetch_daily_data()
         if not videos:
