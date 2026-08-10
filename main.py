@@ -13,6 +13,7 @@ import requests
 from requests_oauthlib import OAuth1
 from openai import OpenAI
 from PIL import Image, ImageDraw, ImageFont
+import sheets
 
 # === 환경 변수 ===
 RUN_MODE = os.environ.get("RUN_MODE", "full")
@@ -85,20 +86,23 @@ def generate_content(videos):
 {videos_str}
 
 이 중에서 가장 흥미롭고 사람들의 반응을 이끌어낼 만한 "진짜 괜찮은 콘텐츠 딱 1개"를 선정해 주세요.
-채널 컨셉: 부업의 성공/실패/위험을 균형 있게 다루는 정보 채널 (무조건 돈 번다는 톤 금지)
+채널 컨셉: AI 기술을 활용한 다양한 돈벌이를 연구합니다. AI 기술을 활용한 다양한 콘텐츠의 성공/실패/위험을 균형 있게 다루는 정보 채널 (무조건 돈 번다는 톤 금지)
 
 그 콘텐츠를 바탕으로 다음을 작성해 주세요:
 
-1. TikTok 나레이션 스크립트 (약 25~30초 분량, 5~6문장)
+1. TikTok 나레이션 스크립트 (약 60초 분량, 아래 흐름을 반드시 따르되 라벨/구분 표시 없이 자연스럽게 이어지는 문장으로 작성)
+   - 흐름: 궁금증을 끄는 도입 → 의문 제기 → 단서 제시 → 새로운 의문 제기 → 단서 제시 → 반전 또는 결론 → 시청자에게 질문
+   - 흔한 실수인 "도입 → 설명 → 설명 → 설명 → 끝" 구조는 절대 금지 (평면적 나열 금지, 반드시 의문-단서 구조로 긴장감 유지)
    - 톤: 밝고 에너지 있는 정보 전달자
-   - 마무리 멘트 고정: "이런 정보 제가 매일 분석해드립니다. 더욱 자세한 내용은 프로필 링크에 가득합니다. 오늘도 당신은 멋집니다."
+   - 위 흐름의 마지막 "질문" 다음에 아래 마무리 멘트를 고정으로 붙일 것:
+     "다른 사람들은 어떻게 AI로 돈을 벌고 있는지 프로필 링크를 보시면 확인하실 수 있습니다. 매일 AI로 돈버는 이야기를 제가 직접 전해드립니다. 오늘도 당신은 멋집니다."
    - 맞춤법 완벽하게
 2. Threads/X 글감 3개
    - 톤: "~라고 들었는데 이거 진짜야?", "~라는데 이게 말이 돼?", "해본 사람 있어?" 식의 화제를 던지는 톤
    - 해시태그 절대 사용 금지
 3. YouTube Shorts 제목 (40자 이내, #Shorts 포함)
-4. YouTube 설명문 (2~3줄 + 해시태그 5개)
-5. 뱃지 텍스트: 영상 상단에 표시할 짧은 뱃지 (예: "#1 TODAY", "WARNING", "REALITY CHECK", "핵심 요약 3단계")
+4. YouTube 설명문 (2~3줄 + 콘텐츠 내용에 맞춘 해시태그 정확히 2개)
+5. 뱃지 텍스트: 예시 문구를 그대로 쓰지 말고, 이 콘텐츠의 핵심을 가장 잘 압축해서 설명하는 짧은 문구를 매번 새로 생성
 6. 핵심 요약 3단계: 이 콘텐츠의 핵심을 3단계로 요약 (각 단계는 제목 + 한줄 설명)
 
 반드시 아래 JSON 형식으로만 응답:
@@ -496,55 +500,77 @@ if __name__ == "__main__":
     print(f"실행 시간: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
     print("=" * 50)
     
-    if RUN_MODE == "full":
-        # 1. 데이터 수집
+    if RUN_MODE == "generate":
+        # 새벽 시간대: 콘텐츠 생성 후 시트에 기록만 (렌더링/업로드 없음)
+        if sheets.today_row_exists():
+            print("오늘자 행이 이미 시트에 존재합니다. 중복 생성을 방지하기 위해 종료합니다.")
+            sys.exit(0)
+
         videos = fetch_daily_data()
         if not videos:
             print("데이터 없음. 종료.")
             sys.exit(1)
-        
-        # 2. GPT 콘텐츠 생성
+
         content = generate_content(videos)
-        
+        sheets.append_draft_row(content, content.get("source_url", ""))
+        print("\n시트에 초안 기록 완료 (Status=Approved, 자동승인)")
+
+    elif RUN_MODE == "full":
+        # 오전 8시: 시트에서 오늘의 Approved & 미발행 행을 읽어와 렌더링/업로드
+        row = sheets.find_today_approved_unpublished_row()
+        if not row:
+            print("오늘 발행 대상 행을 찾을 수 없습니다 (generate 모드가 먼저 실행되었는지 확인 필요). 종료.")
+            sys.exit(1)
+
+        content = dict(row["scene_data"])
+        content["narration"] = row["narration"]
+        content["topic"] = row["topic"]
+
         # 3. TTS
         tts_result = generate_tts(content["narration"])
         if not tts_result:
             sys.exit(1)
         audio_path, duration = tts_result
-        
+
         # 4. 포디움 디자인 이미지
         images = generate_images(content)
-        
+
         # 5. 자막
         ass_path = generate_subtitles(content["narration"], duration)
-        
+
         # 6. 영상 합성
         video_path = render_video(images, audio_path, ass_path, duration)
         if not video_path:
             sys.exit(1)
-        
+
         # 7. YouTube 업로드
-        upload_youtube(video_path, content["yt_title"], content["yt_desc"])
-        
+        vid = upload_youtube(video_path, content.get("yt_title", row["topic"]), content.get("yt_desc", ""))
+        if not vid:
+            print("업로드 실패로 시트 갱신을 건너뜁니다.")
+            sys.exit(1)
+
+        video_url = f"https://youtube.com/shorts/{vid}"
+        sheets.mark_published(row["row_num"], video_url)
+
         # 8. 글감1 게시
         print("\n글감1 게시 중...")
-        post_single(content["tx1"])
-        
+        post_single(row["tx1"])
+
     elif RUN_MODE == "post2":
-        print("글감2 생성 및 게시 중...")
-        videos = fetch_daily_data()
-        if not videos:
+        print("글감2 게시 중...")
+        row = sheets.find_today_published_row()
+        if not row:
+            print("오늘 발행된 행을 찾을 수 없습니다. 종료.")
             sys.exit(1)
-        content = generate_content(videos)
-        post_single(content["tx2"])
-        
+        post_single(row["tx2"])
+
     elif RUN_MODE == "post3":
-        print("글감3 생성 및 게시 중...")
-        videos = fetch_daily_data()
-        if not videos:
+        print("글감3 게시 중...")
+        row = sheets.find_today_published_row()
+        if not row:
+            print("오늘 발행된 행을 찾을 수 없습니다. 종료.")
             sys.exit(1)
-        content = generate_content(videos)
-        post_single(content["tx3"])
+        post_single(row["tx3"])
     
     print("\n" + "=" * 50)
     print("완료!")
