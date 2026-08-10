@@ -2,3 +2,5 @@ requests
 requests_oauthlib
 openai
 Pillow
+gspread
+google-auth
