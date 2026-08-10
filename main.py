@@ -150,7 +150,7 @@ def generate_tts(text):
         json={
             "input": {"text": text},
             "voice": {"languageCode": "ko-KR", "name": "ko-KR-Chirp3-HD-Puck"},
-            "audioConfig": {"audioEncoding": "MP3", "speakingRate": 1.1}
+            "audioConfig": {"audioEncoding": "MP3", "speakingRate": 1.2}
         }
     )
     if resp.status_code != 200:
@@ -160,7 +160,7 @@ def generate_tts(text):
             json={
                 "input": {"text": text},
                 "voice": {"languageCode": "ko-KR", "name": "ko-KR-Neural2-C"},
-                "audioConfig": {"audioEncoding": "MP3", "speakingRate": 1.25, "pitch": 2.0}
+                "audioConfig": {"audioEncoding": "MP3", "speakingRate": 1.35, "pitch": 2.0}
             }
         )
         if resp.status_code != 200:
@@ -350,7 +350,7 @@ PlayResY: 1920
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,Noto Sans CJK KR,56,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,4,0,2,70,150,500,1
+Style: Default,Noto Sans CJK KR,40,&H00FFFFFF,&H000000FF,&H00000000,&HC0000000,-1,0,0,0,100,100,0,0,3,2,0,2,70,150,120,1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -365,10 +365,10 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         end_t = current + dur
         end = f"{int(end_t//3600)}:{int((end_t%3600)//60):02d}:{end_t%60:05.2f}"
         
-        # 12자 줄바꿈
+        # 16자 줄바꿈 (폰트 축소로 인해 줄당 더 많은 글자 수용 가능)
         text = ""
-        for idx in range(0, len(sentence), 12):
-            text += sentence[idx:idx+12] + "\\N"
+        for idx in range(0, len(sentence), 16):
+            text += sentence[idx:idx+16] + "\\N"
         text = text.rstrip("\\N")
         
         ass += f"Dialogue: 0,{start},{end},Default,,0,0,0,,{text}\n"
