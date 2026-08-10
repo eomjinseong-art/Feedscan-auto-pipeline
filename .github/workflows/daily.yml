@@ -2,41 +2,44 @@ name: Feedscan AI Daily Pipeline
 
 on:
   schedule:
-    - cron: '0 23 * * *'   # 한국 시간 오전 8시 → 영상 제작 + YouTube 업로드 + 글감1 게시
+    - cron: '0 21 * * *'   # 한국 시간 오전 6시 → 콘텐츠 생성 + 시트 기록(자동승인)
+    - cron: '0 23 * * *'   # 한국 시간 오전 8시 → 렌더링 + YouTube 업로드 + 글감1 게시
     - cron: '0 5 * * *'    # 한국 시간 오후 2시 → 글감2 게시
     - cron: '0 11 * * *'   # 한국 시간 오후 8시 → 글감3 게시
   workflow_dispatch:
     inputs:
       mode:
-        description: 'Run mode: full / post2 / post3'
+        description: 'Run mode: generate / full / post2 / post3'
         required: false
-        default: 'full'
+        default: ''
 
 jobs:
   run:
     runs-on: ubuntu-latest
-    
+
     steps:
     - uses: actions/checkout@v4
-      
+
     - uses: actions/setup-python@v5
       with:
         python-version: '3.11'
-        
+
     - name: Install system dependencies
       run: |
         sudo apt-get update -qq
         sudo apt-get install -y -qq ffmpeg fonts-noto-cjk
-        
+
     - name: Install Python dependencies
       run: pip install -r requirements.txt
-        
+
     - name: Determine run mode
       id: mode
       run: |
         HOUR=$(date -u +%H)
         if [ "${{ github.event.inputs.mode }}" != "" ]; then
           echo "mode=${{ github.event.inputs.mode }}" >> $GITHUB_OUTPUT
+        elif [ "$HOUR" = "21" ]; then
+          echo "mode=generate" >> $GITHUB_OUTPUT
         elif [ "$HOUR" = "23" ]; then
           echo "mode=full" >> $GITHUB_OUTPUT
         elif [ "$HOUR" = "05" ]; then
@@ -44,9 +47,9 @@ jobs:
         elif [ "$HOUR" = "11" ]; then
           echo "mode=post3" >> $GITHUB_OUTPUT
         else
-          echo "mode=full" >> $GITHUB_OUTPUT
+          echo "mode=generate" >> $GITHUB_OUTPUT
         fi
-        
+
     - name: Run Pipeline
       env:
         RUN_MODE: ${{ steps.mode.outputs.mode }}
@@ -61,4 +64,6 @@ jobs:
         YT_CLIENT_ID: ${{ secrets.YT_CLIENT_ID }}
         YT_CLIENT_SECRET: ${{ secrets.YT_CLIENT_SECRET }}
         YT_REFRESH_TOKEN: ${{ secrets.YT_REFRESH_TOKEN }}
+        GOOGLE_SHEETS_CREDENTIALS: ${{ secrets.GOOGLE_SHEETS_CREDENTIALS }}
+        GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
       run: python main.py
