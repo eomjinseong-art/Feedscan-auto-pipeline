@@ -562,6 +562,46 @@ if __name__ == "__main__":
         sheets.append_draft_row(content, content.get("source_url", ""))
         print("\n시트에 초안 기록 완료 (Status=Approved, 자동승인)")
 
+    elif RUN_MODE == "preview":
+        # 미리보기: 시트에서 오늘의 Approved 행을 읽어 TTS+영상 합성까지만 진행
+        # 유튜브 업로드/SNS 게시/시트 Published 처리는 하지 않음 (테스트 전용)
+        row = sheets.find_today_approved_unpublished_row()
+        if not row:
+            print("오늘 미리볼 대상 행을 찾을 수 없습니다 (generate 모드가 먼저 실행되었는지 확인 필요). 종료.")
+            sys.exit(1)
+
+        content = dict(row["scene_data"])
+        content["narration"] = row["narration"]
+        content["topic"] = row["topic"]
+
+        print(f"\n[미리보기] 나레이션 텍스트:\n{content['narration']}\n")
+
+        # 3. TTS
+        tts_result = generate_tts(content["narration"])
+        if not tts_result:
+            sys.exit(1)
+        audio_path, duration = tts_result
+        print(f"[미리보기] 음성 길이: {duration:.1f}초")
+
+        # 4. 포디움 디자인 이미지
+        images = generate_images(content)
+
+        # 5. 자막
+        ass_path = generate_subtitles(content["narration"], duration)
+
+        # 6. 영상 합성
+        video_path = render_video(images, audio_path, ass_path, duration)
+        if not video_path:
+            sys.exit(1)
+
+        # 결과물을 GitHub Actions Artifact로 남기기 위해 outputs 폴더에 복사
+        preview_dir = os.path.join(os.getcwd(), "preview_output")
+        os.makedirs(preview_dir, exist_ok=True)
+        preview_path = os.path.join(preview_dir, "preview.mp4")
+        subprocess.run(["cp", video_path, preview_path])
+        print(f"\n[미리보기 완료] {preview_path}")
+        print("업로드/게시는 진행되지 않았습니다. Actions 실행 결과 하단 Artifacts에서 preview.mp4를 다운로드해 확인하세요.")
+
     elif RUN_MODE == "full":
         # 오전 8시: 시트에서 오늘의 Approved & 미발행 행을 읽어와 렌더링/업로드
         row = sheets.find_today_approved_unpublished_row()
