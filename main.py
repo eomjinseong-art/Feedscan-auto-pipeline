@@ -20,6 +20,8 @@ RUN_MODE = os.environ.get("RUN_MODE", "full")
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 OPENAI_API_BASE = os.environ.get("OPENAI_API_BASE")
 GCP_TTS_KEY = os.environ.get("GCP_TTS_KEY")
+ELEVENLABS_API_KEY = os.environ.get("ELEVENLABS_API_KEY")
+ELEVENLABS_VOICE_ID = "m3gJBS8OofDJfycyA2Ip"  # 태형
 THREADS_TOKEN = os.environ.get("THREADS_TOKEN")
 THREADS_USER_ID = "28052334294453354"
 X_CONSUMER_KEY = os.environ.get("X_CONSUMER_KEY")
@@ -142,34 +144,62 @@ def generate_content(videos):
     print(f"  선정: {result['topic']}")
     return result
 
-# === 3. TTS 생성 (Chirp 3: HD - Puck) ===
+# === 3. TTS 생성 (ElevenLabs 우선 - 태형 보이스, 실패 시 구글 TTS 폴백) ===
 def generate_tts(text):
-    print("[3/7] TTS 생성 중 (Chirp3-HD-Puck)...")
-    resp = requests.post(
-        f"https://texttospeech.googleapis.com/v1beta1/text:synthesize?key={GCP_TTS_KEY}",
-        json={
-            "input": {"text": text},
-            "voice": {"languageCode": "ko-KR", "name": "ko-KR-Chirp3-HD-Puck"},
-            "audioConfig": {"audioEncoding": "MP3", "speakingRate": 1.2}
-        }
-    )
-    if resp.status_code != 200:
-        print(f"  Chirp3-HD 실패, Neural2-C 폴백 시도...")
+    print("[3/7] TTS 생성 중 (ElevenLabs - 태형)...")
+    audio_bytes = None
+
+    if ELEVENLABS_API_KEY:
         resp = requests.post(
-            f"https://texttospeech.googleapis.com/v1/text:synthesize?key={GCP_TTS_KEY}",
+            f"https://api.elevenlabs.io/v1/text-to-speech/{ELEVENLABS_VOICE_ID}",
+            headers={
+                "xi-api-key": ELEVENLABS_API_KEY,
+                "Content-Type": "application/json",
+                "Accept": "audio/mpeg",
+            },
+            json={
+                "text": text,
+                "model_id": "eleven_multilingual_v2",
+                "voice_settings": {
+                    "stability": 0.5,
+                    "similarity_boost": 0.75,
+                    "speed": 1.1
+                }
+            }
+        )
+        if resp.status_code == 200:
+            audio_bytes = resp.content
+        else:
+            print(f"  ElevenLabs 실패({resp.status_code}): {resp.text[:200]}")
+            print("  구글 TTS(Chirp3-HD)로 폴백 시도...")
+
+    if audio_bytes is None:
+        resp = requests.post(
+            f"https://texttospeech.googleapis.com/v1beta1/text:synthesize?key={GCP_TTS_KEY}",
             json={
                 "input": {"text": text},
-                "voice": {"languageCode": "ko-KR", "name": "ko-KR-Neural2-C"},
-                "audioConfig": {"audioEncoding": "MP3", "speakingRate": 1.35, "pitch": 2.0}
+                "voice": {"languageCode": "ko-KR", "name": "ko-KR-Chirp3-HD-Puck"},
+                "audioConfig": {"audioEncoding": "MP3", "speakingRate": 1.2}
             }
         )
         if resp.status_code != 200:
-            print(f"  TTS 실패: {resp.text[:200]}")
-            return None
-    
+            print(f"  Chirp3-HD 실패, Neural2-C 폴백 시도...")
+            resp = requests.post(
+                f"https://texttospeech.googleapis.com/v1/text:synthesize?key={GCP_TTS_KEY}",
+                json={
+                    "input": {"text": text},
+                    "voice": {"languageCode": "ko-KR", "name": "ko-KR-Neural2-C"},
+                    "audioConfig": {"audioEncoding": "MP3", "speakingRate": 1.35, "pitch": 2.0}
+                }
+            )
+            if resp.status_code != 200:
+                print(f"  TTS 실패: {resp.text[:200]}")
+                return None
+        audio_bytes = base64.b64decode(resp.json()["audioContent"])
+
     audio_path = f"{WORK_DIR}/narration.mp3"
     with open(audio_path, "wb") as f:
-        f.write(base64.b64decode(resp.json()["audioContent"]))
+        f.write(audio_bytes)
     
     # 앞뒤 1초 무음 추가
     padded_path = f"{WORK_DIR}/narration_padded.mp3"
