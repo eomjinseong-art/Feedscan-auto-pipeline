@@ -201,7 +201,27 @@ def generate_tts(text):
     audio_path = f"{WORK_DIR}/narration.mp3"
     with open(audio_path, "wb") as f:
         f.write(audio_bytes)
-    
+
+    raw_dur = float(subprocess.check_output([
+        "ffprobe", "-v", "error", "-show_entries", "format=duration",
+        "-of", "default=noprint_wrappers=1:nokey=1", audio_path
+    ]).decode().strip())
+
+    # 쇼츠 판정 기준(60초) 초과 방지: 앞뒤 무음 2초를 더해도 59초를 넘지 않도록
+    # 나레이션 자체 길이를 필요한 만큼만 배속 압축 (57초 목표)
+    TARGET_NARRATION_SEC = 57.0
+    if raw_dur > TARGET_NARRATION_SEC:
+        atempo = min(raw_dur / TARGET_NARRATION_SEC, 2.0)  # ffmpeg atempo 최대 2.0배까지 안전
+        sped_path = f"{WORK_DIR}/narration_sped.mp3"
+        subprocess.run([
+            "ffmpeg", "-y", "-i", audio_path,
+            "-filter:a", f"atempo={atempo:.4f}",
+            sped_path
+        ], capture_output=True)
+        if os.path.exists(sped_path):
+            audio_path = sped_path
+            print(f"  나레이션이 {raw_dur:.1f}초라 쇼츠 기준 초과 → {atempo:.2f}배속 압축 적용")
+
     # 앞뒤 1초 무음 추가
     padded_path = f"{WORK_DIR}/narration_padded.mp3"
     subprocess.run([
@@ -219,6 +239,10 @@ def generate_tts(text):
         "ffprobe", "-v", "error", "-show_entries", "format=duration",
         "-of", "default=noprint_wrappers=1:nokey=1", final_audio
     ]).decode().strip())
+
+    if dur >= 59.5:
+        print(f"  경고: 최종 길이 {dur:.1f}초 — 60초 쇼츠 기준을 넘을 수 있습니다.")
+
     print(f"  생성 완료: {dur:.1f}초")
     return final_audio, dur
 
@@ -446,6 +470,12 @@ def render_video(images, audio_path, ass_path, duration):
 # === 7. YouTube 업로드 ===
 def upload_youtube(video_path, title, description, thumbnail_path=None):
     print("[7/7] YouTube 업로드 중...")
+
+    # #Shorts 태그 누락 방지 (쇼츠 판정에 중요)
+    if "#shorts" not in title.lower() and "#Shorts" not in title:
+        title = f"{title[:36]} #Shorts"
+    if "#shorts" not in description.lower():
+        description = f"{description}\n#Shorts"
     
     token_resp = requests.post("https://oauth2.googleapis.com/token", data={
         "client_id": YT_CLIENT_ID,
