@@ -22,6 +22,7 @@ OPENAI_API_BASE = os.environ.get("OPENAI_API_BASE")
 GCP_TTS_KEY = os.environ.get("GCP_TTS_KEY")
 ELEVENLABS_API_KEY = os.environ.get("ELEVENLABS_API_KEY")
 ELEVENLABS_VOICE_ID = "m3gJBS8OofDJfycyA2Ip"  # 태형
+FIXED_COMMENT = "AI로 돈버는 방법, 매일 다른 사례로 알려드려요 🤖💰 프로필 링크를 확인해주세요!"
 THREADS_TOKEN = os.environ.get("THREADS_TOKEN")
 THREADS_USER_ID = "28052334294453354"
 X_CONSUMER_KEY = os.environ.get("X_CONSUMER_KEY")
@@ -493,6 +494,9 @@ def upload_youtube(video_path, title, description, thumbnail_path=None):
     vid = upload_resp.json().get("id")
     print(f"  업로드 완료: https://youtube.com/shorts/{vid}")
 
+    # 고정 댓글 작성
+    post_fixed_comment(vid, access_token)
+
     # 썸네일(표지) 업로드
     if thumbnail_path and os.path.exists(thumbnail_path):
         with open(thumbnail_path, "rb") as f:
@@ -510,6 +514,30 @@ def upload_youtube(video_path, title, description, thumbnail_path=None):
             print(f"  썸네일 업로드 실패(영상 업로드는 정상): {thumb_resp.text[:200]}")
 
     return vid
+
+# === 8. 고정 댓글 작성 ===
+def post_fixed_comment(video_id, access_token):
+    resp = requests.post(
+        "https://www.googleapis.com/youtube/v3/commentThreads?part=snippet",
+        headers={
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": "application/json"
+        },
+        json={
+            "snippet": {
+                "videoId": video_id,
+                "topLevelComment": {
+                    "snippet": {"textOriginal": FIXED_COMMENT}
+                }
+            }
+        }
+    )
+    if resp.status_code in (200, 201):
+        print("  고정 댓글 작성 완료")
+        return True
+    else:
+        print(f"  댓글 작성 실패: {resp.text[:300]}")
+        return False
 
 # === 소셜 게시 (1개만) ===
 def post_single(text):
