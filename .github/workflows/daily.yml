@@ -68,3 +68,11 @@ jobs:
         GOOGLE_SHEETS_CREDENTIALS: ${{ secrets.GOOGLE_SHEETS_CREDENTIALS }}
         GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
       run: python main.py
+
+    - name: Upload preview video (preview 모드일 때만)
+      if: ${{ github.event.inputs.mode == 'preview' }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: preview-video
+        path: preview_output/preview.mp4
+        retention-days: 3
