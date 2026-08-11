@@ -258,10 +258,10 @@ def generate_images(content):
     
     images = []
     
-    # === 씬 1: 포디움 + 뱃지 + 메인 제목 (bg2.png 사용) ===
-    bg_path = os.path.join(bg_dir, "bg2.png")
+    # === 씬 1: 포디움 + 뱃지 + 메인 제목 (고정 표지 이미지 cover.png 사용) ===
+    bg_path = os.path.join(bg_dir, "cover.png")
     if not os.path.exists(bg_path):
-        bg_path = os.path.join(bg_dir, "bg1.png")
+        bg_path = os.path.join(bg_dir, "bg2.png")
     img = Image.open(bg_path).convert("RGBA").resize((1080, 1920))
     draw = ImageDraw.Draw(img)
     
@@ -443,7 +443,7 @@ def render_video(images, audio_path, ass_path, duration):
         return None
 
 # === 7. YouTube 업로드 ===
-def upload_youtube(video_path, title, description):
+def upload_youtube(video_path, title, description, thumbnail_path=None):
     print("[7/7] YouTube 업로드 중...")
     
     token_resp = requests.post("https://oauth2.googleapis.com/token", data={
@@ -486,13 +486,30 @@ def upload_youtube(video_path, title, description):
     with open(video_path, "rb") as f:
         upload_resp = requests.put(upload_url, headers={"Content-Type": "video/mp4"}, data=f)
     
-    if upload_resp.status_code == 200:
-        vid = upload_resp.json().get("id")
-        print(f"  업로드 완료: https://youtube.com/shorts/{vid}")
-        return vid
-    else:
+    if upload_resp.status_code != 200:
         print(f"  업로드 실패: {upload_resp.text[:200]}")
         return None
+
+    vid = upload_resp.json().get("id")
+    print(f"  업로드 완료: https://youtube.com/shorts/{vid}")
+
+    # 썸네일(표지) 업로드
+    if thumbnail_path and os.path.exists(thumbnail_path):
+        with open(thumbnail_path, "rb") as f:
+            thumb_resp = requests.post(
+                f"https://www.googleapis.com/upload/youtube/v3/thumbnails/set?videoId={vid}",
+                headers={
+                    "Authorization": f"Bearer {access_token}",
+                    "Content-Type": "image/png"
+                },
+                data=f.read()
+            )
+        if thumb_resp.status_code == 200:
+            print("  썸네일(표지) 업로드 완료")
+        else:
+            print(f"  썸네일 업로드 실패(영상 업로드는 정상): {thumb_resp.text[:200]}")
+
+    return vid
 
 # === 소셜 게시 (1개만) ===
 def post_single(text):
@@ -574,7 +591,7 @@ if __name__ == "__main__":
             sys.exit(1)
 
         # 7. YouTube 업로드
-        vid = upload_youtube(video_path, content.get("yt_title", row["topic"]), content.get("yt_desc", ""))
+        vid = upload_youtube(video_path, content.get("yt_title", row["topic"]), content.get("yt_desc", ""), thumbnail_path=images[0])
         if not vid:
             print("업로드 실패로 시트 갱신을 건너뜁니다.")
             sys.exit(1)
